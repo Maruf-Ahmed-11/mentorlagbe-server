@@ -1,34 +1,29 @@
 import express from 'express';
 import cors from 'cors';
-import { MongoClient, ServerApiVersion } from 'mongodb';
+import { MongoClient, ObjectId, ServerApiVersion } from 'mongodb';
 import 'dotenv/config';
 
 const app = express();
 const PORT = process.env.PORT || 8000;
 
-// 1. CORS Configuration
+// CORS configuration
 const allowedOrigins = [
   'http://localhost:3000',
   'http://127.0.0.1:3000',
   'http://localhost:3001',
   'http://localhost:5173',
   process.env.CLIENT_URL,
+  process.env.CLIENT_URI,
   process.env.FRONTEND_URL,
 ].filter(Boolean);
 
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow requests with no origin (like Postman, curl, or mobile tools)
       if (!origin) return callback(null, true);
-
       const isAllowed =
-        allowedOrigins.includes(origin) ||
-        origin.endsWith('.vercel.app');
-
-      if (isAllowed) {
-        return callback(null, true);
-      }
+        allowedOrigins.includes(origin) || origin.endsWith('.vercel.app');
+      if (isAllowed) return callback(null, true);
       return callback(new Error(`CORS blocked for origin: ${origin}`));
     },
     credentials: true,
@@ -37,10 +32,25 @@ app.use(
   })
 );
 
-// 2. Body Parser Middleware
 app.use(express.json());
 
-// 3. MongoDB Client Setup
+// Security middleware: verifyToken
+export const verifyToken = (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) {
+    return res.status(401).send({ message: 'Unauthorized access: No token provided' });
+  }
+
+  const token = authHeader.split(' ')[1];
+  if (!token) {
+    return res.status(401).send({ message: 'Unauthorized access: Invalid token format' });
+  }
+
+  req.token = token;
+  next();
+};
+
+// Database connection & collections setup
 const uri = process.env.MONGODB_URI;
 const client = new MongoClient(uri, {
   serverApi: {
@@ -51,14 +61,20 @@ const client = new MongoClient(uri, {
 });
 
 let db;
+export let tuitionsCollection;
+export let applicationsCollection;
+export let usersCollection;
 export let destinationCollection;
 
 async function connectDB() {
   try {
     await client.connect();
     db = client.db('mentorlagbe');
+    tuitionsCollection = db.collection('tuitions');
+    applicationsCollection = db.collection('applications');
+    usersCollection = db.collection('user');
     destinationCollection = db.collection('destination');
-    console.log('Successfully connected to MongoDB!');
+    console.log('Successfully connected to MongoDB (mentorlagbe)!');
   } catch (err) {
     console.error('MongoDB connection error:', err.message);
   }
@@ -66,21 +82,23 @@ async function connectDB() {
 
 connectDB();
 
-// 4. Routes
 app.get('/', (req, res) => {
   res.send({ status: 'ok', message: 'MentorLagbe server is running fine!' });
 });
 
-// Error handling middleware
 app.use((err, req, res, next) => {
+  if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
+    return res.status(400).json({ message: 'Invalid JSON payload' });
+  }
   if (err?.message?.includes('CORS blocked')) {
     return res.status(403).json({ error: err.message });
   }
-  console.error(err.stack);
+  console.error(err.stack || err);
   res.status(500).json({ error: 'Internal Server Error' });
 });
 
-// 5. Start Server
 app.listen(PORT, () => {
   console.log(`Server is running at http://localhost:${PORT}`);
 });
+
+export default app;
