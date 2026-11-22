@@ -90,6 +90,13 @@ const getObjectId = (id) => {
   }
 };
 
+// Authentication / Token endpoint
+app.post('/jwt', async (req, res) => {
+  const user = req.body;
+  const token = Buffer.from(JSON.stringify(user || {})).toString('base64');
+  res.send({ token, message: 'Token generated (simplified)' });
+});
+
 // ==========================================
 // TUITIONS API ROUTES
 // ==========================================
@@ -192,6 +199,83 @@ app.delete('/tuitions/:id', verifyToken, async (req, res) => {
     res.send(result);
   } catch (err) {
     res.status(500).send({ message: 'Failed to delete tuition', error: err.message });
+  }
+});
+
+// ==========================================
+// APPLICATIONS API ROUTES
+// ==========================================
+
+// Apply for a tuition (Secured)
+app.post('/applications', verifyToken, async (req, res) => {
+  try {
+    const applicationData = req.body;
+
+    const existing = await applicationsCollection.findOne({
+      tuitionId: applicationData.tuitionId,
+      studentEmail: applicationData.studentEmail,
+    });
+
+    if (existing) {
+      return res.status(400).send({ message: 'You have already applied for this tuition!' });
+    }
+
+    const doc = {
+      ...applicationData,
+      status: applicationData.status || 'pending',
+      appliedAt: new Date(),
+    };
+
+    const result = await applicationsCollection.insertOne(doc);
+    res.status(201).send(result);
+  } catch (err) {
+    res.status(500).send({ message: 'Failed to submit application', error: err.message });
+  }
+});
+
+// Get applications (Secured)
+app.get('/applications', verifyToken, async (req, res) => {
+  try {
+    const query = {};
+    if (req.query.studentEmail) query.studentEmail = req.query.studentEmail;
+    if (req.query.tutorEmail) query.tutorEmail = req.query.tutorEmail;
+    if (req.query.tuitionId) query.tuitionId = req.query.tuitionId;
+
+    const result = await applicationsCollection.find(query).sort({ appliedAt: -1 }).toArray();
+    res.send(result);
+  } catch (err) {
+    res.status(500).send({ message: 'Failed to fetch applications', error: err.message });
+  }
+});
+
+// Update application status (Secured)
+app.patch('/applications/:id', verifyToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+    const objId = getObjectId(id);
+    const query = objId ? { _id: objId } : { id: id };
+
+    const result = await applicationsCollection.updateOne(query, {
+      $set: { status, updatedAt: new Date() },
+    });
+    res.send(result);
+  } catch (err) {
+    res.status(500).send({ message: 'Failed to update application', error: err.message });
+  }
+});
+
+// Delete application (Secured)
+app.delete('/applications/:id', verifyToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const objId = getObjectId(id);
+    const query = objId ? { _id: objId } : { id: id };
+
+    const result = await applicationsCollection.deleteOne(query);
+    res.send(result);
+  } catch (err) {
+    res.status(500).send({ message: 'Failed to delete application', error: err.message });
   }
 });
 
