@@ -146,6 +146,20 @@ app.post('/jwt', async (req, res) => {
 app.post('/tuitions', verifyToken, async (req, res) => {
   try {
     const data = req.body;
+
+    // Reject exact duplicate tuition postings for the same tutor
+    if (data.tutorEmail && data.title && data.subject) {
+      const existing = await tuitionsCollection.findOne({
+        tutorEmail: data.tutorEmail,
+        title: { $regex: new RegExp(`^${data.title.trim()}$`, 'i') },
+        subject: data.subject,
+        classLevel: data.classLevel,
+      });
+      if (existing) {
+        return res.status(409).send({ message: 'A tuition listing with this exact title and subject already exists.' });
+      }
+    }
+
     const doc = {
       ...data,
       monthlyFee: Number(data.monthlyFee) || 0,
