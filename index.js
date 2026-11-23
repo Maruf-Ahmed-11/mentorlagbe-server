@@ -163,7 +163,7 @@ app.post('/tuitions', verifyToken, async (req, res) => {
     const doc = {
       ...data,
       monthlyFee: Number(data.monthlyFee) || 0,
-      approvalStatus: data.approvalStatus || 'approved',
+      approvalStatus: data.approvalStatus || 'pending',
       isActive: data.isActive !== undefined ? data.isActive : true,
       createdAt: data.createdAt ? new Date(data.createdAt) : new Date(),
     };
