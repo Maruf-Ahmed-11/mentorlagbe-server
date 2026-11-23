@@ -163,7 +163,7 @@ app.post('/tuitions', verifyToken, async (req, res) => {
     const doc = {
       ...data,
       monthlyFee: Number(data.monthlyFee) || 0,
-      approvalStatus: data.approvalStatus || 'pending',
+      approvalStatus: 'pending', // Strictly pending by default for all tutor postings
       isActive: data.isActive !== undefined ? data.isActive : true,
       createdAt: data.createdAt ? new Date(data.createdAt) : new Date(),
     };
@@ -179,6 +179,11 @@ app.get('/tuitions', async (req, res) => {
   try {
     const query = {};
     if (req.query.email) {
+      // Auto-migrate tutor-created listings to pending if never explicitly verified by admin
+      await tuitionsCollection.updateMany(
+        { tutorEmail: req.query.email, adminVerifiedAt: { $exists: false } },
+        { $set: { approvalStatus: 'pending' } }
+      );
       query.tutorEmail = req.query.email;
     }
     if (req.query.status) {
