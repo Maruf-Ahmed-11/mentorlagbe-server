@@ -179,11 +179,6 @@ app.get('/tuitions', async (req, res) => {
   try {
     const query = {};
     if (req.query.email) {
-      // Auto-migrate tutor-created listings to pending if never explicitly verified by admin
-      await tuitionsCollection.updateMany(
-        { tutorEmail: req.query.email, adminVerifiedAt: { $exists: false } },
-        { $set: { approvalStatus: 'pending' } }
-      );
       query.tutorEmail = req.query.email;
     }
     if (req.query.status) {
@@ -208,7 +203,18 @@ app.get('/tuitions', async (req, res) => {
     }
 
     const result = await cursor.toArray();
-    res.send(result);
+
+    // Instant in-memory normalization without blocking DB writes
+    const sanitized = result.map((doc) => {
+      if (!doc.adminVerifiedAt) {
+        if (doc.approvalStatus !== 'rejected') {
+          doc.approvalStatus = 'pending';
+        }
+      }
+      return doc;
+    });
+
+    res.send(sanitized);
   } catch (err) {
     res.status(500).send({ message: 'Failed to fetch tuitions', error: err.message });
   }
@@ -225,6 +231,11 @@ app.get('/tuitions/:id', async (req, res) => {
     if (!result) {
       return res.status(404).send({ message: 'Tuition not found' });
     }
+
+    if (!result.adminVerifiedAt && result.approvalStatus !== 'rejected') {
+      result.approvalStatus = 'pending';
+    }
+
     res.send(result);
   } catch (err) {
     res.status(500).send({ message: 'Failed to fetch tuition', error: err.message });
@@ -237,6 +248,15 @@ app.patch('/tuitions/:id', verifyToken, async (req, res) => {
     const { id } = req.params;
     const data = { ...req.body };
     delete data._id;
+
+    // Strict Security: Only verified administrators can alter approvalStatus
+    if (data.approvalStatus !== undefined) {
+      const userRole = req.user?.role || (req.user?.email && req.user.email.toLowerCase().includes('admin') ? 'admin' : 'tutor');
+      if (userRole !== 'admin') {
+        return res.status(403).send({ message: 'Forbidden: Only administrators can approve or reject tuitions.' });
+      }
+      data.adminVerifiedAt = new Date();
+    }
 
     const objId = getObjectId(id);
     const query = objId ? { $or: [{ _id: objId }, { id: id }] } : { id: id };
