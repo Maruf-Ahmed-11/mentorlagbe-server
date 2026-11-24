@@ -2,11 +2,13 @@ import express from 'express';
 import cors from 'cors';
 import { MongoClient, ObjectId, ServerApiVersion } from 'mongodb';
 import { createRemoteJWKSet, jwtVerify, SignJWT } from 'jose';
+import Stripe from 'stripe';
 import 'dotenv/config';
 
 const app = express();
 const PORT = process.env.PORT || 8000;
 const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:3000';
+const stripe = process.env.STRIPE_SECRET_KEY ? new Stripe(process.env.STRIPE_SECRET_KEY) : null;
 
 // ==========================================
 // 1. CORS CONFIGURATION
@@ -91,6 +93,7 @@ export let tuitionsCollection;
 export let applicationsCollection;
 export let usersCollection;
 export let destinationCollection;
+export let paymentsCollection;
 
 async function connectDB() {
   try {
@@ -100,6 +103,7 @@ async function connectDB() {
     applicationsCollection = db.collection('applications');
     usersCollection = db.collection('user');
     destinationCollection = db.collection('destination');
+    paymentsCollection = db.collection('payments');
     console.log('Successfully connected to MongoDB (mentorlagbe)!');
   } catch (err) {
     console.error('MongoDB connection error:', err.message);
@@ -146,6 +150,22 @@ app.post('/jwt', async (req, res) => {
 app.post('/tuitions', verifyToken, async (req, res) => {
   try {
     const data = req.body;
+    const tutorEmail = data.tutorEmail || req.user?.email;
+
+    // Check free tier posting limit (2 free posts for tutors, unlimited for pro)
+    if (tutorEmail) {
+      const userDoc = await usersCollection.findOne({ email: { $regex: new RegExp(`^${tutorEmail}$`, 'i') } });
+      const isPro = userDoc?.plan === 'pro' || userDoc?.role === 'admin' || req.user?.role === 'admin';
+      const postCount = await tuitionsCollection.countDocuments({ tutorEmail: { $regex: new RegExp(`^${tutorEmail}$`, 'i') } });
+      if (!isPro && postCount >= 2) {
+        return res.status(403).send({
+          code: 'LIMIT_REACHED',
+          message: 'Free post limit reached (2/2 posts). Upgrade to Tutor Pro for unlimited tuition posts.',
+          limit: 2,
+          count: postCount,
+        });
+      }
+    }
 
     // Reject exact duplicate tuition postings for the same tutor
     if (data.tutorEmail && data.title && data.subject) {
@@ -171,6 +191,20 @@ app.post('/tuitions', verifyToken, async (req, res) => {
     res.status(201).send(result);
   } catch (err) {
     res.status(500).send({ message: 'Failed to create tuition', error: err.message });
+  }
+});
+
+// Count tuitions (Public with filters)
+app.get('/tuitions/count', async (req, res) => {
+  try {
+    const query = {};
+    if (req.query.email) {
+      query.tutorEmail = { $regex: new RegExp(`^${req.query.email}$`, 'i') };
+    }
+    const count = await tuitionsCollection.countDocuments(query);
+    res.send({ count });
+  } catch (err) {
+    res.status(500).send({ message: 'Failed to count tuitions', error: err.message });
   }
 });
 
@@ -290,6 +324,22 @@ app.delete('/tuitions/:id', verifyToken, async (req, res) => {
 app.post('/applications', verifyToken, async (req, res) => {
   try {
     const applicationData = req.body;
+    const studentEmail = applicationData.studentEmail || req.user?.email;
+
+    // Check free tier application limit (10 free applications for students, unlimited for pro)
+    if (studentEmail) {
+      const userDoc = await usersCollection.findOne({ email: { $regex: new RegExp(`^${studentEmail}$`, 'i') } });
+      const isPro = userDoc?.plan === 'pro' || userDoc?.role === 'admin' || req.user?.role === 'admin';
+      const appCount = await applicationsCollection.countDocuments({ studentEmail: { $regex: new RegExp(`^${studentEmail}$`, 'i') } });
+      if (!isPro && appCount >= 10) {
+        return res.status(403).send({
+          code: 'LIMIT_REACHED',
+          message: 'Free application limit reached (10/10). Upgrade to Student Pro for unlimited applications.',
+          limit: 10,
+          count: appCount,
+        });
+      }
+    }
 
     const existing = await applicationsCollection.findOne({
       tuitionId: applicationData.tuitionId,
@@ -310,6 +360,176 @@ app.post('/applications', verifyToken, async (req, res) => {
     res.status(201).send(result);
   } catch (err) {
     res.status(500).send({ message: 'Failed to submit application', error: err.message });
+  }
+});
+
+// Count applications (Public with filters)
+app.get('/applications/count', async (req, res) => {
+  try {
+    const query = {};
+    if (req.query.email) {
+      query.studentEmail = { $regex: new RegExp(`^${req.query.email}$`, 'i') };
+    }
+    if (req.query.studentEmail) {
+      query.studentEmail = { $regex: new RegExp(`^${req.query.studentEmail}$`, 'i') };
+    }
+    if (req.query.tutorEmail) {
+      query.tutorEmail = { $regex: new RegExp(`^${req.query.tutorEmail}$`, 'i') };
+    }
+    const count = await applicationsCollection.countDocuments(query);
+    res.send({ count });
+  } catch (err) {
+    res.status(500).send({ message: 'Failed to count applications', error: err.message });
+  }
+});
+
+// Get user usage & limits (Secured / Query)
+app.get('/users/usage', async (req, res) => {
+  try {
+    const email = req.query.email;
+    if (!email) {
+      return res.status(400).send({ message: 'Email query parameter is required' });
+    }
+
+    const userDoc = await usersCollection.findOne({ email: { $regex: new RegExp(`^${email}$`, 'i') } });
+    const role = userDoc?.role || 'student';
+    const plan = userDoc?.plan || 'free';
+    const isPro = plan === 'pro' || role === 'admin';
+
+    const [tuitionsCount, applicationsCount] = await Promise.all([
+      tuitionsCollection.countDocuments({ tutorEmail: { $regex: new RegExp(`^${email}$`, 'i') } }),
+      applicationsCollection.countDocuments({ studentEmail: { $regex: new RegExp(`^${email}$`, 'i') } }),
+    ]);
+
+    const tutorLimit = 2;
+    const studentLimit = 10;
+
+    res.send({
+      email,
+      role,
+      plan: isPro ? 'pro' : 'free',
+      tuitionsCount,
+      applicationsCount,
+      canPost: isPro || tuitionsCount < tutorLimit,
+      canApply: isPro || applicationsCount < studentLimit,
+      tutorLimit,
+      studentLimit,
+    });
+  } catch (err) {
+    res.status(500).send({ message: 'Failed to retrieve usage stats', error: err.message });
+  }
+});
+
+// ==========================================
+// 7. PAYMENTS API ROUTES (STRIPE CHECKOUT & PRO UPGRADE)
+// ==========================================
+
+// Verify Stripe Checkout Session & Activate Pro
+app.post('/payments/verify', verifyToken, async (req, res) => {
+  try {
+    const { sessionId } = req.body;
+    if (!sessionId) {
+      return res.status(400).send({ message: 'sessionId is required' });
+    }
+
+    if (!stripe) {
+      return res.status(500).send({ message: 'Stripe is not configured on server' });
+    }
+
+    // Retrieve checkout session from Stripe
+    const session = await stripe.checkout.sessions.retrieve(sessionId, {
+      expand: ['payment_intent'],
+    });
+
+    if (!session || session.payment_status !== 'paid') {
+      return res.status(400).send({
+        message: 'Payment has not been completed on Stripe',
+        paymentStatus: session?.payment_status,
+      });
+    }
+
+    const currentEmail = (req.user?.email || '').toLowerCase().trim();
+    const sessionEmail = (session.customer_email || session.metadata?.userEmail || session.customer_details?.email || '').toLowerCase().trim();
+
+    // Anti-spoofing: Check if session belongs to currently logged in user
+    if (currentEmail && sessionEmail && currentEmail !== sessionEmail) {
+      return res.status(403).send({ message: 'Forbidden: Checkout session does not match logged-in user account' });
+    }
+
+    // Anti-replay: Check if session ID has already been recorded
+    const existing = await paymentsCollection.findOne({ sessionId });
+    if (existing) {
+      if (existing.userEmail && currentEmail && existing.userEmail.toLowerCase() !== currentEmail) {
+        return res.status(409).send({ message: 'Conflict: This checkout session was already used by another user account.' });
+      }
+      return res.send({
+        success: true,
+        message: 'Payment already processed and verified.',
+        payment: existing,
+        plan: 'pro',
+      });
+    }
+
+    const paymentIntentId =
+      typeof session.payment_intent === 'string'
+        ? session.payment_intent
+        : session.payment_intent?.id || session.id;
+
+    const amount = (session.amount_total || 0) / 100;
+    const role = session.metadata?.role || (amount >= 15 ? 'tutor' : 'student');
+    const effectiveEmail = sessionEmail || currentEmail;
+
+    const paymentRecord = {
+      sessionId: session.id,
+      paymentIntentId,
+      userId: session.metadata?.userId || req.user?.id || req.user?.sub || '',
+      userEmail: effectiveEmail,
+      customerEmail: session.customer_details?.email || session.customer_email || effectiveEmail,
+      amount,
+      currency: session.currency || 'usd',
+      plan: 'pro',
+      role,
+      status: 'paid',
+      createdAt: new Date(),
+    };
+
+    await paymentsCollection.insertOne(paymentRecord);
+
+    // Update user's plan to 'pro' in usersCollection
+    if (effectiveEmail) {
+      await usersCollection.updateOne(
+        { email: { $regex: new RegExp(`^${effectiveEmail}$`, 'i') } },
+        { $set: { plan: 'pro', updatedAt: new Date() } }
+      );
+    }
+
+    res.send({
+      success: true,
+      message: 'Pro plan activated successfully!',
+      payment: paymentRecord,
+      plan: 'pro',
+    });
+  } catch (err) {
+    res.status(500).send({ message: 'Payment verification failed', error: err.message });
+  }
+});
+
+// Get user payment transactions (Secured)
+app.get('/payments', verifyToken, async (req, res) => {
+  try {
+    const query = {};
+    const isAdmin = req.user?.role === 'admin' || (req.user?.email && req.user.email.toLowerCase().includes('admin'));
+
+    if (!isAdmin) {
+      query.userEmail = { $regex: new RegExp(`^${req.user?.email}$`, 'i') };
+    } else if (req.query.email) {
+      query.userEmail = { $regex: new RegExp(`^${req.query.email}$`, 'i') };
+    }
+
+    const payments = await paymentsCollection.find(query).sort({ createdAt: -1 }).toArray();
+    res.send(payments);
+  } catch (err) {
+    res.status(500).send({ message: 'Failed to fetch payments', error: err.message });
   }
 });
 
