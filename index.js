@@ -76,6 +76,45 @@ export const verifyToken = async (req, res, next) => {
   }
 };
 
+// Role-based access middlewares (Challenge 2)
+const resolveUserRole = async (req) => {
+  const email = (req.user?.email || '').toLowerCase().trim();
+  if (email && usersCollection) {
+    const userDoc = await usersCollection.findOne({
+      email: { $regex: new RegExp(`^${email.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') },
+    });
+    if (userDoc?.role) return String(userDoc.role).toLowerCase();
+  }
+  return String(req.user?.role || 'student').toLowerCase();
+};
+
+export const verifyStudent = async (req, res, next) => {
+  const role = await resolveUserRole(req);
+  if (role !== 'student') {
+    return res.status(403).send({ message: 'Forbidden: Student role required' });
+  }
+  req.userRole = role;
+  return next();
+};
+
+export const verifyTutor = async (req, res, next) => {
+  const role = await resolveUserRole(req);
+  if (role !== 'tutor' && role !== 'admin') {
+    return res.status(403).send({ message: 'Forbidden: Tutor role required' });
+  }
+  req.userRole = role;
+  return next();
+};
+
+export const verifyAdmin = async (req, res, next) => {
+  const role = await resolveUserRole(req);
+  if (role !== 'admin') {
+    return res.status(403).send({ message: 'Forbidden: Admin role required' });
+  }
+  req.userRole = role;
+  return next();
+};
+
 // ==========================================
 // 3. DATABASE SETUP & COLLECTIONS
 // ==========================================
@@ -94,6 +133,7 @@ export let applicationsCollection;
 export let usersCollection;
 export let destinationCollection;
 export let paymentsCollection;
+export let reviewsCollection;
 
 async function connectDB() {
   try {
@@ -104,6 +144,7 @@ async function connectDB() {
     usersCollection = db.collection('user');
     destinationCollection = db.collection('destination');
     paymentsCollection = db.collection('payments');
+    reviewsCollection = db.collection('reviews');
     console.log('Successfully connected to MongoDB (mentorlagbe)!');
   } catch (err) {
     console.error('MongoDB connection error:', err.message);
@@ -146,8 +187,8 @@ app.post('/jwt', async (req, res) => {
 // 5. TUITIONS API ROUTES
 // ==========================================
 
-// Create a new tuition (Secured)
-app.post('/tuitions', verifyToken, async (req, res) => {
+// Create a new tuition (Secured: Tutor or Admin)
+app.post('/tuitions', verifyToken, verifyTutor, async (req, res) => {
   try {
     const data = req.body;
     const tutorEmail = data.tutorEmail || req.user?.email;
@@ -208,9 +249,10 @@ app.get('/tuitions/count', async (req, res) => {
   }
 });
 
-// Get all tuitions (Public with filters)
+// Get all tuitions (Public with server-side search & filters)
 app.get('/tuitions', async (req, res) => {
   try {
+    const escapeRx = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const query = {};
     if (req.query.email) {
       query.tutorEmail = req.query.email;
@@ -218,8 +260,29 @@ app.get('/tuitions', async (req, res) => {
     if (req.query.status) {
       query.approvalStatus = req.query.status;
     }
-    if (req.query.subject) {
-      query.subject = { $regex: req.query.subject, $options: 'i' };
+    if (req.query.isActive !== undefined) {
+      query.isActive = req.query.isActive === 'true';
+    }
+    if (req.query.subject && req.query.subject.toLowerCase() !== 'all') {
+      query.subject = { $regex: `^${escapeRx(req.query.subject)}$`, $options: 'i' };
+    }
+    if (req.query.classLevel && req.query.classLevel.toLowerCase() !== 'all') {
+      query.classLevel = { $regex: `^${escapeRx(req.query.classLevel)}$`, $options: 'i' };
+    }
+    if (req.query.mode && req.query.mode.toLowerCase() !== 'all') {
+      query.mode = { $regex: escapeRx(req.query.mode), $options: 'i' };
+    }
+    if (req.query.q) {
+      const safeQ = escapeRx(req.query.q.trim());
+      if (safeQ) {
+        query.$or = [
+          { title: { $regex: safeQ, $options: 'i' } },
+          { subject: { $regex: safeQ, $options: 'i' } },
+          { classLevel: { $regex: safeQ, $options: 'i' } },
+          { location: { $regex: safeQ, $options: 'i' } },
+          { tutorName: { $regex: safeQ, $options: 'i' } },
+        ];
+      }
     }
 
     let cursor = tuitionsCollection.find(query);
@@ -232,6 +295,10 @@ app.get('/tuitions', async (req, res) => {
       cursor = cursor.sort({ monthlyFee: -1 });
     }
 
+    const skip = req.query.skip ? parseInt(req.query.skip, 10) : 0;
+    if (skip > 0) {
+      cursor = cursor.skip(skip);
+    }
     if (req.query.limit) {
       cursor = cursor.limit(parseInt(req.query.limit, 10));
     }
@@ -320,8 +387,8 @@ app.delete('/tuitions/:id', verifyToken, async (req, res) => {
 // 6. APPLICATIONS API ROUTES
 // ==========================================
 
-// Apply for a tuition (Secured)
-app.post('/applications', verifyToken, async (req, res) => {
+// Apply for a tuition (Secured: Student only)
+app.post('/applications', verifyToken, verifyStudent, async (req, res) => {
   try {
     const applicationData = req.body;
     const studentEmail = applicationData.studentEmail || req.user?.email;
@@ -548,8 +615,8 @@ app.get('/applications', verifyToken, async (req, res) => {
   }
 });
 
-// Update application status (Secured)
-app.patch('/applications/:id', verifyToken, async (req, res) => {
+// Update application status (Secured: Tutor or Admin)
+app.patch('/applications/:id', verifyToken, verifyTutor, async (req, res) => {
   try {
     const { id } = req.params;
     const { status } = req.body;
@@ -565,17 +632,128 @@ app.patch('/applications/:id', verifyToken, async (req, res) => {
   }
 });
 
-// Delete application (Secured)
-app.delete('/applications/:id', verifyToken, async (req, res) => {
+// Delete / Cancel pending application (Secured: Student owner)
+app.delete('/applications/:id', verifyToken, verifyStudent, async (req, res) => {
   try {
     const { id } = req.params;
     const objId = getObjectId(id);
     const query = objId ? { _id: objId } : { id: id };
+    const existing = await applicationsCollection.findOne(query);
+
+    if (!existing) {
+      return res.status(404).send({ message: 'Application not found' });
+    }
+    if (
+      req.user?.email &&
+      existing.studentEmail &&
+      existing.studentEmail.toLowerCase() !== req.user.email.toLowerCase()
+    ) {
+      return res.status(403).send({ message: 'Forbidden: You can only cancel your own application' });
+    }
+    if (String(existing.status || 'pending').toLowerCase() !== 'pending') {
+      return res.status(400).send({ message: 'Only pending applications can be cancelled' });
+    }
 
     const result = await applicationsCollection.deleteOne(query);
     res.send(result);
   } catch (err) {
     res.status(500).send({ message: 'Failed to delete application', error: err.message });
+  }
+});
+
+// ==========================================
+// 8. REVIEWS & ADMIN ENDPOINTS
+// ==========================================
+
+// Get reviews for a tuition (Public)
+app.get('/reviews', async (req, res) => {
+  try {
+    const { tuitionId } = req.query;
+    if (!tuitionId) {
+      return res.status(400).send({ message: 'tuitionId is required' });
+    }
+    const reviews = await reviewsCollection
+      .find({ tuitionId: String(tuitionId) })
+      .sort({ createdAt: -1 })
+      .toArray();
+    const totalReviews = reviews.length;
+    const averageRating =
+      totalReviews > 0
+        ? Number((reviews.reduce((sum, r) => sum + Number(r.rating || 0), 0) / totalReviews).toFixed(1))
+        : 0;
+    res.send({ reviews, totalReviews, averageRating });
+  } catch (err) {
+    res.status(500).send({ message: 'Failed to fetch reviews', error: err.message });
+  }
+});
+
+// Submit or update review (Secured: Accepted Student)
+app.post('/reviews', verifyToken, verifyStudent, async (req, res) => {
+  try {
+    const { tuitionId, tuitionTitle, rating, comment } = req.body;
+    const studentEmail = (req.user?.email || '').toLowerCase().trim();
+    const numRating = Number(rating);
+
+    if (!tuitionId || !comment?.trim() || numRating < 1 || numRating > 5) {
+      return res.status(400).send({ message: 'Valid tuitionId, rating (1-5), and comment are required' });
+    }
+
+    const acceptedApp = await applicationsCollection.findOne({
+      tuitionId: String(tuitionId),
+      studentEmail: { $regex: new RegExp(`^${studentEmail}$`, 'i') },
+      status: { $regex: /^accepted$/i },
+    });
+
+    if (!acceptedApp) {
+      return res.status(403).send({ message: 'Only accepted students can review this tuition' });
+    }
+
+    await reviewsCollection.updateOne(
+      { tuitionId: String(tuitionId), studentEmail },
+      {
+        $set: {
+          tuitionId: String(tuitionId),
+          tuitionTitle: tuitionTitle || 'Tuition Session',
+          studentEmail,
+          studentName: req.user?.name || 'Student',
+          rating: numRating,
+          comment: comment.trim(),
+          updatedAt: new Date(),
+        },
+        $setOnInsert: { createdAt: new Date() },
+      },
+      { upsert: true }
+    );
+
+    res.send({ success: true, message: 'Review submitted successfully' });
+  } catch (err) {
+    res.status(500).send({ message: 'Failed to submit review', error: err.message });
+  }
+});
+
+// Admin Users Management (Secured: Admin only)
+app.get('/admin/users', verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    const users = await usersCollection.find().sort({ createdAt: -1 }).toArray();
+    res.send({ users });
+  } catch (err) {
+    res.status(500).send({ message: 'Failed to fetch users', error: err.message });
+  }
+});
+
+app.patch('/admin/users', verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    const { email, role } = req.body;
+    if (!email || !['student', 'tutor', 'admin'].includes(role)) {
+      return res.status(400).send({ message: 'Valid email and role are required' });
+    }
+    const result = await usersCollection.updateOne(
+      { email: { $regex: new RegExp(`^${email}$`, 'i') } },
+      { $set: { role, updatedAt: new Date() } }
+    );
+    res.send({ success: true, result });
+  } catch (err) {
+    res.status(500).send({ message: 'Failed to update user role', error: err.message });
   }
 });
 
