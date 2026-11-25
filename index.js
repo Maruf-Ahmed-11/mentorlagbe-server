@@ -7,17 +7,14 @@ import 'dotenv/config';
 
 const app = express();
 const PORT = process.env.PORT || 8000;
-const CLIENT_URL = (process.env.CLIENT_URL || 'https://mentorlagbe-9oiym1a9a-mugiwara14.vercel.app').replace(/\/$/, '');
+const CLIENT_URL = (process.env.CLIENT_URL || '').replace(/\/$/, '');
 const stripe = process.env.STRIPE_SECRET_KEY ? new Stripe(process.env.STRIPE_SECRET_KEY) : null;
 
 // ==========================================
 // 1. CORS CONFIGURATION
-// Configured for CLIENT_URL and Vercel preview/production aliases
+// Configured strictly via CLIENT_URL env and Vercel preview/production aliases
 // ==========================================
-const allowedOrigins = new Set([
-  CLIENT_URL,
-  'https://mentorlagbe-9oiym1a9a-mugiwara14.vercel.app',
-]);
+const allowedOrigins = new Set(CLIENT_URL ? [CLIENT_URL] : []);
 
 app.use(
   cors({
