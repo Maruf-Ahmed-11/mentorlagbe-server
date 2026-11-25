@@ -7,16 +7,16 @@ import 'dotenv/config';
 
 const app = express();
 const PORT = process.env.PORT || 8000;
-const CLIENT_URL = (process.env.CLIENT_URL || 'http://localhost:3000').replace(/\/$/, '');
+const CLIENT_URL = (process.env.CLIENT_URL || 'https://mentorlagbe-9oiym1a9a-mugiwara14.vercel.app').replace(/\/$/, '');
 const stripe = process.env.STRIPE_SECRET_KEY ? new Stripe(process.env.STRIPE_SECRET_KEY) : null;
 
 // ==========================================
 // 1. CORS CONFIGURATION
-// Configured for Localhost, CLIENT_URL, and Vercel preview/production aliases
+// Configured for CLIENT_URL and Vercel preview/production aliases
 // ==========================================
 const allowedOrigins = new Set([
   CLIENT_URL,
-  'http://localhost:3000',
+  'https://mentorlagbe-9oiym1a9a-mugiwara14.vercel.app',
 ]);
 
 app.use(
@@ -792,7 +792,7 @@ app.use((err, req, res, next) => {
 
 if (!process.env.VERCEL) {
   app.listen(PORT, () => {
-    console.log(`Server is running at http://localhost:${PORT}`);
+    console.log(`Server is running on port ${PORT}`);
   });
 }
 
