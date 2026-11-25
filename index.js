@@ -7,16 +7,31 @@ import 'dotenv/config';
 
 const app = express();
 const PORT = process.env.PORT || 8000;
-const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:3000';
+const CLIENT_URL = (process.env.CLIENT_URL || 'http://localhost:3000').replace(/\/$/, '');
 const stripe = process.env.STRIPE_SECRET_KEY ? new Stripe(process.env.STRIPE_SECRET_KEY) : null;
 
 // ==========================================
 // 1. CORS CONFIGURATION
-// Configured strictly for Frontend (localhost:3000 locally, CLIENT_URL on deploy)
+// Configured for Localhost, CLIENT_URL, and Vercel preview/production aliases
 // ==========================================
+const allowedOrigins = new Set([
+  CLIENT_URL,
+  'http://localhost:3000',
+]);
+
 app.use(
   cors({
-    origin: [CLIENT_URL],
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+      const cleanOrigin = origin.replace(/\/$/, '');
+      if (
+        allowedOrigins.has(cleanOrigin) ||
+        /^https:\/\/mentorlagbe[\w-]*\.vercel\.app$/i.test(cleanOrigin)
+      ) {
+        return callback(null, true);
+      }
+      return callback(new Error(`CORS blocked for origin: ${origin}`));
+    },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
@@ -775,8 +790,10 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Internal Server Error' });
 });
 
-app.listen(PORT, () => {
-  console.log(`Server is running at http://localhost:${PORT}`);
-});
+if (!process.env.VERCEL) {
+  app.listen(PORT, () => {
+    console.log(`Server is running at http://localhost:${PORT}`);
+  });
+}
 
 export default app;
